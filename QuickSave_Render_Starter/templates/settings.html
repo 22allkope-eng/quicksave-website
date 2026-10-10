@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Website & SEO settings — QuickSave Admin{% endblock %}
+{% block content %}
+<main class="admin-shell">
+  <div class="admin-heading"><div><div class="panel-kicker">CONTROL PANEL</div><h1>Website & SEO settings</h1><p class="muted">Edit how QuickSave appears in search results and when shared on social media.</p></div></div>
+  <nav class="admin-nav"><a href="{{ url_for('admin_dashboard') }}">Overview</a><a href="{{ url_for('admin_links') }}">Manage links</a><a class="active" href="{{ url_for('admin_settings') }}">Website & SEO</a><a href="{{ url_for('admin_password') }}">Change password</a></nav>
+  <form method="post" class="panel settings-form">
+    <h2>Homepage content</h2>
+    <label>Subtitle under the QuickSave logo<input name="subtitle" maxlength="100" value="{{ subtitle }}" required></label>
+    <label>Optional announcement <small>(leave blank to hide)</small><textarea name="announcement" rows="3" maxlength="300" placeholder="Example: New tools have been added.">{{ announcement }}</textarea></label>
+    <hr>
+    <h2>Ad slots</h2>
+    <div class="ad-slot-group">
+      <label>Ad slot 1 title <small>Display label</small><input name="ad_slot_1_title" maxlength="80" value="{{ ad_slot_1_title }}" placeholder="Ad 1"></label>
+      <label>Ad slot 1 image URL <small>Use an image URL or leave blank</small><input type="url" name="ad_slot_1_image" maxlength="500" value="{{ ad_slot_1_image }}" placeholder="https://example.com/banner1.jpg"></label>
+      <label>Ad slot 1 URL <small>Paste the ad landing page URL here</small><input type="url" name="ad_slot_1_url" maxlength="500" value="{{ ad_slot_1_url }}" placeholder="https://example.com/ad1"></label>
+    </div>
+    <div class="ad-slot-group">
+      <label>Ad slot 2 title <small>Display label</small><input name="ad_slot_2_title" maxlength="80" value="{{ ad_slot_2_title }}" placeholder="Ad 2"></label>
+      <label>Ad slot 2 image URL <small>Use an image URL or leave blank</small><input type="url" name="ad_slot_2_image" maxlength="500" value="{{ ad_slot_2_image }}" placeholder="https://example.com/banner2.jpg"></label>
+      <label>Ad slot 2 URL <small>Paste the ad landing page URL here</small><input type="url" name="ad_slot_2_url" maxlength="500" value="{{ ad_slot_2_url }}" placeholder="https://example.com/ad2"></label>
+    </div>
+    <hr>
+    <h2>Search engine optimization (SEO)</h2>
+    <label>SEO page title <small>Recommended: around 50–60 characters</small><input name="seo_title" maxlength="160" value="{{ seo_title }}" required></label>
+    <label>Meta description <small>Write a useful summary, ideally around 140–160 characters</small><textarea name="seo_description" rows="3" maxlength="320" required>{{ seo_description }}</textarea></label>
+    <label>Keywords <small>Comma-separated; these are optional hints and are not a Google ranking shortcut</small><textarea name="seo_keywords" rows="2" maxlength="500">{{ seo_keywords }}</textarea></label>
+    <label>Social sharing image URL <small>Optional: use an absolute HTTPS URL to an image you control</small><input type="url" name="seo_image_url" maxlength="500" value="{{ seo_image_url }}" placeholder="https://yourdomain.com/static/share-image.jpg"></label>
+    <p class="muted small-note">The title and description feed the homepage metadata. Individual platform guide pages get their own titles and descriptions automatically.</p>
+    <button class="btn primary" type="submit">Save website & SEO settings</button>
+  </form>
+</main>
+{% endblock %}
