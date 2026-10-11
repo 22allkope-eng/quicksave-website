@@ -61,3 +61,32 @@ def test_db_uses_postgres_when_database_url_is_present(monkeypatch):
     db = module.db()
     assert isinstance(db, module.PostgresConnection)
     db.close()
+
+
+def test_duplicate_link_insert_error_redirects_without_crashing(monkeypatch):
+    class DummyConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params=()):
+            raise RuntimeError("duplicate key value violates unique constraint")
+
+        def fetchone(self):
+            return {"n": 1}
+
+    monkeypatch.setattr(module, "db", lambda: DummyConn())
+    monkeypatch.setattr(module, "valid_external_url", lambda value: True)
+
+    with module.app.test_client() as client:
+        with client.session_transaction() as session:
+            session["admin_user"] = "admin"
+        response = client.post(
+            "/admin/links",
+            data={"action": "add", "new_platform": "YouTube", "new_subtitle": "Test", "new_url": "https://example.com"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302

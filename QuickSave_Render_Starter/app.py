@@ -71,6 +71,27 @@ def is_postgres_database():
     database_url = (os.environ.get("DATABASE_URL") or "").strip()
     return bool(database_url) and (database_url.startswith("postgres://") or database_url.startswith("postgresql://"))
 
+
+def enabled_where_clause():
+    return "enabled = TRUE" if is_postgres_database() else "enabled = 1"
+
+
+def enabled_value(value):
+    if is_postgres_database():
+        return bool(value)
+    return 1 if value else 0
+
+
+def is_integrity_error(exc):
+    if exc is None:
+        return False
+    if isinstance(exc, sqlite3.IntegrityError):
+        return True
+    if psycopg2 is not None:
+        return isinstance(exc, psycopg2.errors.IntegrityError)
+    return False
+
+
 LANGUAGE_TRANSLATIONS = {
     "en": {
         "site_name": "QuickSave",
@@ -230,7 +251,7 @@ def init_db():
                     platform TEXT UNIQUE NOT NULL,
                     subtitle TEXT DEFAULT '',
                     url TEXT NOT NULL,
-                    enabled INTEGER DEFAULT 1,
+                    enabled BOOLEAN DEFAULT TRUE,
                     sort_order INTEGER DEFAULT 0
                 )
             """)
@@ -413,7 +434,7 @@ def sitemap_xml():
     root = request.url_root.rstrip("/")
     urls = [(root + "/", "daily", "1.0")]
     with db() as con:
-        links = con.execute("SELECT platform FROM links WHERE enabled=1 ORDER BY sort_order,platform").fetchall()
+        links = con.execute(f"SELECT platform FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform").fetchall()
     for row in links:
         slug = row["platform"].lower().replace(" ", "-")
         urls.append((root + "/tools/" + slug, "weekly", "0.8"))
@@ -427,7 +448,7 @@ def sitemap_xml():
 @app.route("/tools/<slug>")
 def tool_page(slug):
     with db() as con:
-        all_links = con.execute("SELECT * FROM links WHERE enabled=1 ORDER BY sort_order,platform").fetchall()
+        all_links = con.execute(f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform").fetchall()
     chosen = None
     for link in all_links:
         if link["platform"].lower().replace(" ", "-") == slug.lower():
@@ -447,7 +468,7 @@ def tool_page(slug):
 @app.route("/")
 def home():
     with db() as con:
-        links = con.execute("SELECT * FROM links WHERE enabled=1 ORDER BY sort_order, platform").fetchall()
+        links = con.execute(f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order, platform").fetchall()
     seo = seo_context()
     ads = []
     for slot in (1, 2):
@@ -463,7 +484,7 @@ def home():
 @app.route("/go/<int:link_id>")
 def go(link_id):
     with db() as con:
-        link = con.execute("SELECT * FROM links WHERE id=? AND enabled=1", (link_id,)).fetchone()
+        link = con.execute(f"SELECT * FROM links WHERE id=? AND {enabled_where_clause()}", (link_id,)).fetchone()
         if not link:
             abort(404)
         now = utc_now()
@@ -548,7 +569,7 @@ def admin_links():
                     platform = request.form.get(f"platform_{lid}","").strip()[:40]
                     subtitle = request.form.get(f"subtitle_{lid}","").strip()[:100]
                     url = request.form.get(f"url_{lid}","").strip()
-                    enabled = 1 if request.form.get(f"enabled_{lid}") == "on" else 0
+                    enabled = enabled_value(request.form.get(f"enabled_{lid}") == "on")
                     if not platform or not valid_external_url(url):
                         flash(f"Platform #{lid}: enter a name and a valid http/https URL.", "error")
                         return redirect(url_for("admin_links"))
@@ -565,9 +586,11 @@ def admin_links():
                     try:
                         next_order = con.execute("SELECT COALESCE(MAX(sort_order),0)+1 n FROM links").fetchone()["n"]
                         con.execute("INSERT INTO links(platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?)",
-                                    (platform,subtitle,url,1,next_order))
+                                    (platform,subtitle,url,enabled_value(True),next_order))
                         flash("Platform added.", "success")
-                    except sqlite3.IntegrityError:
+                    except Exception as exc:
+                        if not is_integrity_error(exc):
+                            raise
                         flash("That platform name already exists. Use a unique name.", "error")
         return redirect(url_for("admin_links"))
     with db() as con:
