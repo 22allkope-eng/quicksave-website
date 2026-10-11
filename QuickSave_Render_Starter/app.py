@@ -183,76 +183,118 @@ def set_request_locale():
     g.locale = detect_locale(request.headers.get("Accept-Language"), request.headers.get("CF-IPCountry"))
     g.i18n = get_translations(g.locale)
 
+def get_db_connection():
+    database_url = (os.environ.get("DATABASE_URL") or "").strip()
+    if database_url and is_postgres_database():
+        try:
+            if psycopg2 is None:
+                raise RuntimeError("psycopg2 is required when DATABASE_URL points to PostgreSQL.")
+            return PostgresConnection(database_url)
+        except Exception:
+            app.logger.exception("Postgres connection failed.")
+            return None
+
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=15)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=15000")
+        return conn
+    except Exception:
+        app.logger.exception("SQLite connection failed.")
+        return None
+
+
 def db():
-    if is_postgres_database():
-        return PostgresConnection(os.environ["DATABASE_URL"])
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=15000")
-    return conn
+    return get_db_connection()
+
 
 def init_db():
+    con = get_db_connection()
+    if con is None:
+        raise RuntimeError("Database connection could not be created. Check DATABASE_URL or the sqlite path.")
+
     postgres_mode = is_postgres_database()
-    with db() as con:
+    try:
         if postgres_mode:
-            con.execute("""CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY, value TEXT NOT NULL
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS links (
-                id BIGSERIAL PRIMARY KEY, platform TEXT UNIQUE NOT NULL,
-                subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS visits (
-                id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
-                day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
-                referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS clicks (
-                id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
-                day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
-                username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
-            )""")
+            try:
+                con.execute("""CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL
+                )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS links (
+                    id BIGSERIAL PRIMARY KEY, platform TEXT UNIQUE NOT NULL,
+                    subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
+                )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS visits (
+                    id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
+                    day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
+                    referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
+                )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS clicks (
+                    id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
+                    day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
+                )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
+                    username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
+                )""")
+            except Exception:
+                app.logger.exception("Postgres table creation failed.")
+                raise
         else:
-            con.execute("""CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY, value TEXT NOT NULL
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS links (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT UNIQUE NOT NULL,
-                subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS visits (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
-                day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
-                referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS clicks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
-                day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
-                username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
-            )""")
-        existing = con.execute("SELECT COUNT(*) n FROM links").fetchone()["n"]
+            try:
+                con.execute("""CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL
+                )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT UNIQUE NOT NULL,
+                    subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
+                )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS visits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+                    day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
+                    referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
+                )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS clicks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+                    day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
+                )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
+                    username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
+                )""")
+            except Exception:
+                app.logger.exception("SQLite table creation failed.")
+                raise
+
+        try:
+            existing_row = con.execute("SELECT COUNT(*) n FROM links").fetchone()
+            existing = existing_row["n"] if existing_row else 0
+        except Exception:
+            app.logger.exception("Failed to read link count after table creation.")
+            raise
+
         if not existing:
             con.executemany("INSERT INTO links(platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?)",
                             [(p,s,u,1,i) for i,(p,s,u,slug) in enumerate(DEFAULT_LINKS)])
         else:
             con.execute("UPDATE links SET url=? WHERE platform=? AND url!=?", (DEFAULT_LINKS[0][2], "YouTube", DEFAULT_LINKS[0][2]))
+
         configured_password = ADMIN_PASSWORD or "ChangeMeNow-2026!"
         existing_user = con.execute("SELECT username FROM admin_users WHERE username=?", (ADMIN_USER,)).fetchone()
         if existing_user:
             con.execute("UPDATE admin_users SET password_hash=? WHERE username=?",
                         (generate_password_hash(configured_password), ADMIN_USER))
         else:
-            # Safe first-run default is only for local testing; set ADMIN_PASSWORD on Render.
             con.execute("INSERT INTO admin_users(username,password_hash) VALUES(?,?)",
                         (ADMIN_USER, generate_password_hash(configured_password)))
+
         if ADMIN_PASSWORD:
             con.execute("DELETE FROM admin_users WHERE username != ?", (ADMIN_USER,))
+
         con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     ("site_subtitle", "Video Downloader Directory"))
         con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -265,6 +307,16 @@ def init_db():
                     ("seo_keywords", "video downloader, social media video tools, YouTube video tools, Facebook video tools, Instagram Reels tools, TikTok video tools"))
         con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     ("seo_image_url", ""))
+
+        if hasattr(con, "commit"):
+            con.commit()
+    except Exception:
+        if hasattr(con, "rollback"):
+            con.rollback()
+        raise
+    finally:
+        if con is not None and hasattr(con, "close"):
+            con.close()
 init_db()
 
 def utc_now():
