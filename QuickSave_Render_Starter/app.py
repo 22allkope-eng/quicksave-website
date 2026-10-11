@@ -13,9 +13,7 @@ except ImportError:  # pragma: no cover - installed only in Render deployments
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-DB_PATH = "/tmp/quicksave.db"
-if os.environ.get("SQLITE_PATH"):
-    DB_PATH = os.environ.get("SQLITE_PATH")
+DB_PATH = os.environ.get("DATABASE_PATH", "quicksave.db")
 ADMIN_USER = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 SITE_NAME = "QuickSave"
@@ -33,14 +31,13 @@ class PostgresConnection:
         self.conn.autocommit = False
         self.cursor_obj = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    def cursor(self):
-        return PostgresCursor(self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor))
-
     def execute(self, query, params=()):
-        return self.cursor_obj.execute(_normalize_query_for_postgres(query), params)
+        self.cursor_obj.execute(_normalize_query_for_postgres(query), params)
+        return self
 
     def executemany(self, query, params_seq):
-        return self.cursor_obj.executemany(_normalize_query_for_postgres(query), params_seq)
+        self.cursor_obj.executemany(_normalize_query_for_postgres(query), params_seq)
+        return self
 
     def fetchone(self):
         return self.cursor_obj.fetchone()
@@ -70,41 +67,6 @@ class PostgresConnection:
         self.conn.close()
 
 
-class PostgresCursor:
-    def __init__(self, cursor):
-        self.cursor_obj = cursor
-
-    def execute(self, query, params=()):
-        return self.cursor_obj.execute(_normalize_query_for_postgres(query), params)
-
-    def fetchone(self):
-        return self.cursor_obj.fetchone()
-
-    def fetchall(self):
-        return self.cursor_obj.fetchall()
-
-    def close(self):
-        self.cursor_obj.close()
-
-
-def fetch_one(con, query, params=()):
-    cur = con.cursor()
-    try:
-        cur.execute(query, params)
-        return cur.fetchone()
-    finally:
-        cur.close()
-
-
-def fetch_all(con, query, params=()):
-    cur = con.cursor()
-    try:
-        cur.execute(query, params)
-        return cur.fetchall()
-    finally:
-        cur.close()
-
-
 def is_postgres_database():
     database_url = (os.environ.get("DATABASE_URL") or "").strip()
     return bool(database_url) and (database_url.startswith("postgres://") or database_url.startswith("postgresql://"))
@@ -115,19 +77,7 @@ def enabled_where_clause():
 
 
 def enabled_value(value):
-    if is_postgres_database():
-        return bool(value)
-    return 1 if value else 0
-
-
-def is_integrity_error(exc):
-    if exc is None:
-        return False
-    if isinstance(exc, sqlite3.IntegrityError):
-        return True
-    if psycopg2 is not None:
-        return isinstance(exc, psycopg2.IntegrityError)
-    return False
+    return bool(value) if is_postgres_database() else (1 if value else 0)
 
 
 LANGUAGE_TRANSLATIONS = {
@@ -244,206 +194,98 @@ def set_request_locale():
     g.locale = detect_locale(request.headers.get("Accept-Language"), request.headers.get("CF-IPCountry"))
     g.i18n = get_translations(g.locale)
 
-def get_db_connection():
-    database_url = (os.environ.get("DATABASE_URL") or "").strip()
-    if database_url and is_postgres_database():
-        try:
-            if psycopg2 is None:
-                raise RuntimeError("psycopg2 is required when DATABASE_URL points to PostgreSQL.")
-            return PostgresConnection(database_url)
-        except Exception:
-            app.logger.exception("Postgres connection failed.")
-            return None
-
-    db_dir = os.path.dirname(DB_PATH)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
-
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=15)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=15000")
-        return conn
-    except Exception:
-        app.logger.exception("SQLite connection failed.")
-        return None
-
-
 def db():
-    return get_db_connection()
-
+    if is_postgres_database():
+        return PostgresConnection(os.environ["DATABASE_URL"])
+    db_dir = os.path.dirname(os.path.abspath(DB_PATH))
+    os.makedirs(db_dir, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=15000")
+    return conn
 
 def init_db():
-    con = get_db_connection()
-    if con is None:
-        raise RuntimeError("Database connection failed during startup; cannot initialize schema.")
-
-    database_is_postgres = is_postgres_database()
-
-    try:
-        if database_is_postgres:
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS links (
-                    id SERIAL PRIMARY KEY,
-                    title TEXT NOT NULL DEFAULT '',
-                    platform TEXT UNIQUE NOT NULL,
-                    subtitle TEXT DEFAULT '',
-                    url TEXT NOT NULL,
-                    enabled BOOLEAN DEFAULT TRUE,
-                    sort_order INTEGER DEFAULT 0
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS visits (
-                    id SERIAL PRIMARY KEY,
-                    path TEXT,
-                    visitor_hash TEXT,
-                    referrer TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    day DATE DEFAULT CURRENT_DATE,
-                    country TEXT DEFAULT ''
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS clicks (
-                    id SERIAL PRIMARY KEY,
-                    created_at TEXT NOT NULL,
-                    day TEXT NOT NULL,
-                    platform TEXT NOT NULL,
-                    visitor_hash TEXT NOT NULL
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS admin_users (
-                    username TEXT PRIMARY KEY,
-                    password_hash TEXT NOT NULL
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS businesses (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
-            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''")
-            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS platform TEXT")
-            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS subtitle TEXT DEFAULT ''")
-            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS url TEXT")
-            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE")
-            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0")
-            con.execute("UPDATE links SET platform = title WHERE platform IS NULL OR platform = ''")
-            con.execute("UPDATE links SET title = platform WHERE title IS NULL OR title = ''")
-            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS links_platform_unique ON links(platform)")
-
-            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS path TEXT")
-            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS visitor_hash TEXT")
-            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS referrer TEXT")
-            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS day DATE DEFAULT CURRENT_DATE")
-            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS country TEXT DEFAULT ''")
+    postgres_mode = is_postgres_database()
+    with db() as con:
+        if postgres_mode:
+            con.execute("""CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS links (
+                id BIGSERIAL PRIMARY KEY, platform TEXT UNIQUE NOT NULL,
+                subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE, sort_order INTEGER NOT NULL DEFAULT 0
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS visits (
+                id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
+                day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
+                referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS clicks (
+                id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
+                day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
+                username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
+            )""")
+            con.execute("ALTER TABLE links ALTER COLUMN enabled TYPE BOOLEAN USING (enabled::text IN ('1','t','true'))")
+            con.execute("ALTER TABLE links ALTER COLUMN enabled SET DEFAULT TRUE")
         else:
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS links (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title TEXT NOT NULL DEFAULT '',
-                    platform TEXT UNIQUE NOT NULL,
-                    subtitle TEXT DEFAULT '',
-                    url TEXT NOT NULL,
-                    enabled INTEGER DEFAULT 1,
-                    sort_order INTEGER DEFAULT 0
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS visits (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    path TEXT,
-                    visitor_hash TEXT,
-                    referrer TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    day DATE DEFAULT CURRENT_DATE,
-                    country TEXT DEFAULT ''
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS clicks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL,
-                    day TEXT NOT NULL,
-                    platform TEXT NOT NULL,
-                    visitor_hash TEXT NOT NULL
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS admin_users (
-                    username TEXT PRIMARY KEY,
-                    password_hash TEXT NOT NULL
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                )
-            """)
-            con.execute("""
-                CREATE TABLE IF NOT EXISTS businesses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
-            link_columns = {row["name"] for row in fetch_all(con, "PRAGMA table_info(links)")}
-            for column, definition in (
-                ("title", "TEXT NOT NULL DEFAULT ''"),
-                ("platform", "TEXT"),
-                ("subtitle", "TEXT DEFAULT ''"),
-                ("url", "TEXT"),
-                ("enabled", "INTEGER DEFAULT 1"),
-                ("sort_order", "INTEGER DEFAULT 0"),
-            ):
-                if column not in link_columns:
-                    con.execute(f"ALTER TABLE links ADD COLUMN {column} {definition}")
-            con.execute("UPDATE links SET platform = title WHERE platform IS NULL OR platform = ''")
-            con.execute("UPDATE links SET title = platform WHERE title IS NULL OR title = ''")
-            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS links_platform_unique ON links(platform)")
-
-            visit_columns = {row["name"] for row in fetch_all(con, "PRAGMA table_info(visits)")}
-            for column, definition in (
-                ("path", "TEXT"),
-                ("visitor_hash", "TEXT"),
-                ("referrer", "TEXT"),
-                ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
-                ("day", "DATE DEFAULT CURRENT_DATE"),
-                ("country", "TEXT DEFAULT ''"),
-            ):
-                if column not in visit_columns:
-                    con.execute(f"ALTER TABLE visits ADD COLUMN {column} {definition}")
-
-        row = fetch_one(con, "SELECT COUNT(*) AS count FROM links")
-        con.commit()
-        app.logger.info("Database schema initialized successfully; links=%s", row["count"] if row else 0)
-    except Exception as e:
-        try:
-            con.rollback()
-        except Exception:
-            pass
-        app.logger.exception("Database schema initialization failed")
-        raise RuntimeError("Database schema initialization failed") from e
-    finally:
-        try:
-            con.close()
-        except Exception:
-            pass
-
+            con.execute("""CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT UNIQUE NOT NULL,
+                subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+                day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
+                referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS clicks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+                day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
+                username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
+            )""")
+        existing = con.execute("SELECT COUNT(*) n FROM links").fetchone()["n"]
+        if not existing:
+            con.executemany("INSERT INTO links(platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?)",
+                            [(p,s,u,enabled_value(True),i) for i,(p,s,u,slug) in enumerate(DEFAULT_LINKS)])
+        else:
+            con.execute("UPDATE links SET url=? WHERE platform=? AND url!=?", (DEFAULT_LINKS[0][2], "YouTube", DEFAULT_LINKS[0][2]))
+        existing_user = con.execute("SELECT username,password_hash FROM admin_users WHERE username=?", (ADMIN_USER,)).fetchone()
+        local_fallback_password = "ChangeMeNow-2026!"
+        if existing_user and check_password_hash(existing_user["password_hash"], local_fallback_password):
+            if postgres_mode and not ADMIN_PASSWORD:
+                raise RuntimeError("Set ADMIN_PASSWORD to replace the local fallback before hosting.")
+            if ADMIN_PASSWORD:
+                con.execute("UPDATE admin_users SET password_hash=? WHERE username=?",
+                            (generate_password_hash(ADMIN_PASSWORD), ADMIN_USER))
+        elif not existing_user:
+            if postgres_mode and not ADMIN_PASSWORD:
+                raise RuntimeError("Set ADMIN_PASSWORD before initializing the hosted PostgreSQL database.")
+            configured_password = ADMIN_PASSWORD or local_fallback_password
+            con.execute("INSERT INTO admin_users(username,password_hash) VALUES(?,?)",
+                        (ADMIN_USER, generate_password_hash(configured_password)))
+        if ADMIN_PASSWORD:
+            con.execute("DELETE FROM admin_users WHERE username != ?", (ADMIN_USER,))
+        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("site_subtitle", "Video Downloader Directory"))
+        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("announcement", ""))
+        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("seo_title", "QuickSave - Video Downloader Directory"))
+        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("seo_description", "Find useful external video download tools for YouTube, Facebook, Instagram, TikTok, X and LinkedIn in one simple directory."))
+        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("seo_keywords", "video downloader, social media video tools, YouTube video tools, Facebook video tools, Instagram Reels tools, TikTok video tools"))
+        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("seo_image_url", ""))
+init_db()
 
 def utc_now():
     return datetime.now(timezone.utc)
@@ -466,12 +308,8 @@ def record_visit():
         ref = (request.referrer or "")[:500]
         country = (request.headers.get("CF-IPCountry") or "")[:8]
         with db() as con:
-            cur = con.cursor()
-            try:
-                cur.execute("INSERT INTO visits(created_at,day,visitor_hash,path,referrer,country) VALUES(?,?,?,?,?,?)",
-                            (now.isoformat(), now.strftime("%Y-%m-%d"), visitor_id(), request.path[:200], ref, country))
-            finally:
-                cur.close()
+            con.execute("INSERT INTO visits(created_at,day,visitor_hash,path,referrer,country) VALUES(?,?,?,?,?,?)",
+                        (now.isoformat(), now.strftime("%Y-%m-%d"), visitor_id(), request.path[:200], ref, country))
     except Exception:
         app.logger.exception("Analytics visit write failed")
 
@@ -485,7 +323,7 @@ def admin_required(fn):
 
 def get_setting(key, default=""):
     with db() as con:
-        row = fetch_one(con, "SELECT value FROM settings WHERE key=?", (key,))
+        row = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return row["value"] if row else default
 
 def seo_context(title=None, description=None, canonical=None):
@@ -520,7 +358,7 @@ def sitemap_xml():
     root = request.url_root.rstrip("/")
     urls = [(root + "/", "daily", "1.0")]
     with db() as con:
-        links = fetch_all(con, f"SELECT platform FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform")
+        links = con.execute(f"SELECT platform FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform").fetchall()
     for row in links:
         slug = row["platform"].lower().replace(" ", "-")
         urls.append((root + "/tools/" + slug, "weekly", "0.8"))
@@ -534,7 +372,7 @@ def sitemap_xml():
 @app.route("/tools/<slug>")
 def tool_page(slug):
     with db() as con:
-        all_links = fetch_all(con, f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform")
+        all_links = con.execute(f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform").fetchall()
     chosen = None
     for link in all_links:
         if link["platform"].lower().replace(" ", "-") == slug.lower():
@@ -554,7 +392,7 @@ def tool_page(slug):
 @app.route("/")
 def home():
     with db() as con:
-        links = fetch_all(con, f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order, platform")
+        links = con.execute(f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order, platform").fetchall()
     seo = seo_context()
     ads = []
     for slot in (1, 2):
@@ -570,7 +408,7 @@ def home():
 @app.route("/go/<int:link_id>")
 def go(link_id):
     with db() as con:
-        link = fetch_one(con, f"SELECT * FROM links WHERE id=? AND {enabled_where_clause()}", (link_id,))
+        link = con.execute(f"SELECT * FROM links WHERE id=? AND {enabled_where_clause()}", (link_id,)).fetchone()
         if not link:
             abort(404)
         now = utc_now()
@@ -592,21 +430,21 @@ def admin_dashboard():
     since = (utc_now().date() - timedelta(days=int(period)-1)).isoformat()
     today = utc_now().strftime("%Y-%m-%d")
     with db() as con:
-        total_visits = fetch_one(con, "SELECT COUNT(*) n FROM visits")["n"]
-        today_visits = fetch_one(con, "SELECT COUNT(*) n FROM visits WHERE day=?", (today,))["n"]
-        today_unique = fetch_one(con, "SELECT COUNT(DISTINCT visitor_hash) n FROM visits WHERE day=?", (today,))["n"]
-        page_views = fetch_one(con, "SELECT COUNT(*) n FROM visits WHERE day>=?", (since,))["n"]
-        clicks_total = fetch_one(con, "SELECT COUNT(*) n FROM clicks")["n"]
-        link_stats = fetch_all(con, """SELECT l.platform,l.enabled,l.url,
+        total_visits = con.execute("SELECT COUNT(*) n FROM visits").fetchone()["n"]
+        today_visits = con.execute("SELECT COUNT(*) n FROM visits WHERE day=?", (today,)).fetchone()["n"]
+        today_unique = con.execute("SELECT COUNT(DISTINCT visitor_hash) n FROM visits WHERE day=?", (today,)).fetchone()["n"]
+        page_views = con.execute("SELECT COUNT(*) n FROM visits WHERE day>=?", (since,)).fetchone()["n"]
+        clicks_total = con.execute("SELECT COUNT(*) n FROM clicks").fetchone()["n"]
+        link_stats = con.execute("""SELECT l.platform,l.enabled,l.url,
             (SELECT COUNT(*) FROM clicks c WHERE c.platform=l.platform AND c.day=?) today_clicks,
             (SELECT COUNT(*) FROM clicks c WHERE c.platform=l.platform AND c.day>=?) period_clicks
-            FROM links l ORDER BY l.sort_order,l.platform""", (today, since))
-        daily = fetch_all(con, """SELECT day,COUNT(*) visits,COUNT(DISTINCT visitor_hash) unique_visitors
-            FROM visits WHERE day>=? GROUP BY day ORDER BY day""", (since,))
-        recent = fetch_all(con, "SELECT created_at,path,referrer,country FROM visits ORDER BY id DESC LIMIT 12")
-        top_refs = fetch_all(con, """SELECT CASE WHEN referrer='' THEN 'Direct / unknown'
+            FROM links l ORDER BY l.sort_order,l.platform""", (today, since)).fetchall()
+        daily = con.execute("""SELECT day,COUNT(*) visits,COUNT(DISTINCT visitor_hash) unique_visitors
+            FROM visits WHERE day>=? GROUP BY day ORDER BY day""", (since,)).fetchall()
+        recent = con.execute("SELECT created_at,path,referrer,country FROM visits ORDER BY id DESC LIMIT 12").fetchall()
+        top_refs = con.execute("""SELECT CASE WHEN referrer='' THEN 'Direct / unknown'
             ELSE substr(referrer,1,100) END source,COUNT(*) n FROM visits WHERE day>=?
-            GROUP BY source ORDER BY n DESC LIMIT 8""", (since,))
+            GROUP BY source ORDER BY n DESC LIMIT 8""", (since,)).fetchall()
     return render_template("admin.html", total_visits=total_visits, today_visits=today_visits,
         today_unique=today_unique, page_views=page_views, clicks_total=clicks_total,
         link_stats=link_stats, daily=daily, recent=recent, top_refs=top_refs, period=period,
@@ -620,7 +458,7 @@ def admin_login():
         username = request.form.get("username","").strip()
         password = request.form.get("password","")
         with db() as con:
-            row = fetch_one(con, "SELECT * FROM admin_users WHERE username=?", (username,))
+            row = con.execute("SELECT * FROM admin_users WHERE username=?", (username,)).fetchone()
         if row and check_password_hash(row["password_hash"], password):
             session.clear()
             session["admin_user"] = username
@@ -649,7 +487,7 @@ def admin_links():
         action = request.form.get("action", "save")
         with db() as con:
             if action == "save":
-                rows = fetch_all(con, "SELECT id FROM links")
+                rows = con.execute("SELECT id FROM links").fetchall()
                 for row in rows:
                     lid = row["id"]
                     platform = request.form.get(f"platform_{lid}","").strip()[:40]
@@ -659,8 +497,8 @@ def admin_links():
                     if not platform or not valid_external_url(url):
                         flash(f"Platform #{lid}: enter a name and a valid http/https URL.", "error")
                         return redirect(url_for("admin_links"))
-                    con.execute("UPDATE links SET title=?,platform=?,subtitle=?,url=?,enabled=? WHERE id=?",
-                                (platform,platform,subtitle,url,enabled,lid))
+                    con.execute("UPDATE links SET platform=?,subtitle=?,url=?,enabled=? WHERE id=?",
+                                    (platform,subtitle,url,enabled,lid))
                 flash("Download links saved.", "success")
             elif action == "add":
                 platform = request.form.get("new_platform","").strip()[:40]
@@ -670,17 +508,15 @@ def admin_links():
                     flash("Enter a platform name and a valid http/https URL.", "error")
                 else:
                     try:
-                        next_order = fetch_one(con, "SELECT COALESCE(MAX(sort_order),0)+1 n FROM links")["n"]
-                        con.execute("INSERT INTO links(title,platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?,?)",
-                                    (platform,platform,subtitle,url,enabled_value(True),next_order))
+                        next_order = con.execute("SELECT COALESCE(MAX(sort_order),0)+1 n FROM links").fetchone()["n"]
+                        con.execute("INSERT INTO links(platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?)",
+                                    (platform,subtitle,url,enabled_value(True),next_order))
                         flash("Platform added.", "success")
-                    except Exception as exc:
-                        if not is_integrity_error(exc):
-                            raise
+                    except sqlite3.IntegrityError:
                         flash("That platform name already exists. Use a unique name.", "error")
         return redirect(url_for("admin_links"))
     with db() as con:
-        links = fetch_all(con, "SELECT * FROM links ORDER BY sort_order,platform")
+        links = con.execute("SELECT * FROM links ORDER BY sort_order,platform").fetchall()
     return render_template("links.html", links=links)
 
 @app.route("/admin/settings", methods=["GET","POST"])
@@ -749,7 +585,7 @@ def admin_password():
         new = request.form.get("new_password","")
         confirm = request.form.get("confirm_password","")
         with db() as con:
-            row = fetch_one(con, "SELECT * FROM admin_users WHERE username=?", (session["admin_user"],))
+            row = con.execute("SELECT * FROM admin_users WHERE username=?", (session["admin_user"],)).fetchone()
             if not row or not check_password_hash(row["password_hash"], current):
                 flash("Current password is incorrect.", "error")
             elif len(new) < 12:
@@ -771,11 +607,11 @@ def export_csv():
     writer = csv.writer(output)
     writer.writerow(["date","visits","unique_visitors","download_clicks"])
     with db() as con:
-                days = fetch_all(con, """SELECT d.day,COALESCE(v.visits,0),COALESCE(v.unique_visitors,0),COALESCE(c.clicks,0)
+        days = con.execute("""SELECT d.day,COALESCE(v.visits,0),COALESCE(v.unique_visitors,0),COALESCE(c.clicks,0)
           FROM (SELECT day FROM visits UNION SELECT day FROM clicks) d
           LEFT JOIN (SELECT day,COUNT(*) visits,COUNT(DISTINCT visitor_hash) unique_visitors FROM visits GROUP BY day) v ON v.day=d.day
           LEFT JOIN (SELECT day,COUNT(*) clicks FROM clicks GROUP BY day) c ON c.day=d.day
-                    ORDER BY d.day DESC""")
+          ORDER BY d.day DESC""").fetchall()
     for row in days:
         writer.writerow(list(row))
     from flask import Response
@@ -785,8 +621,6 @@ def export_csv():
 @app.errorhandler(404)
 def not_found(_):
     return render_template("404.html"), 404
-
-init_db()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)

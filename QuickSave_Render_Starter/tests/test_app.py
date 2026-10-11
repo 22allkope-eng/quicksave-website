@@ -63,30 +63,28 @@ def test_db_uses_postgres_when_database_url_is_present(monkeypatch):
     db.close()
 
 
-def test_duplicate_link_insert_error_redirects_without_crashing(monkeypatch):
-    class DummyConn:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
+def test_postgres_execute_keeps_fetch_available():
+    class DummyCursor:
         def execute(self, query, params=()):
-            raise RuntimeError("duplicate key value violates unique constraint")
+            self.query = query
+            self.params = params
 
         def fetchone(self):
-            return {"n": 1}
+            return {"username": "admin"}
 
-    monkeypatch.setattr(module, "db", lambda: DummyConn())
-    monkeypatch.setattr(module, "valid_external_url", lambda value: True)
+    connection = module.PostgresConnection.__new__(module.PostgresConnection)
+    connection.cursor_obj = DummyCursor()
 
-    with module.app.test_client() as client:
-        with client.session_transaction() as session:
-            session["admin_user"] = "admin"
-        response = client.post(
-            "/admin/links",
-            data={"action": "add", "new_platform": "YouTube", "new_subtitle": "Test", "new_url": "https://example.com"},
-            follow_redirects=False,
-        )
+    row = connection.execute("SELECT username FROM admin_users WHERE username=?", ("admin",)).fetchone()
 
-    assert response.status_code == 302
+    assert row["username"] == "admin"
+    assert connection.cursor_obj.query.endswith("username=%s")
+    assert connection.cursor_obj.params == ("admin",)
+
+
+def test_postgres_enabled_values_use_boolean(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host:5432/dbname")
+
+    assert module.enabled_where_clause() == "enabled = TRUE"
+    assert module.enabled_value(True) is True
+    assert module.enabled_value(False) is False

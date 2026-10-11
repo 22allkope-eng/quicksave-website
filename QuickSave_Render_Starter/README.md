@@ -41,7 +41,7 @@ python app.py
 
 Open `http://127.0.0.1:5000`. Admin login: `/admin/login`. Check `http://127.0.0.1:5000/robots.txt` and `http://127.0.0.1:5000/sitemap.xml` to verify SEO endpoints.
 
-If you run without setting `ADMIN_PASSWORD`, the first-run local testing fallback password is `ChangeMeNow-2026!`. Change it immediately in Admin → Change password. **Do not deploy with this fallback.**
+If you run locally without setting `ADMIN_PASSWORD`, the first-run testing fallback is `ChangeMeNow-2026!`. Change it before deployment. Hosted PostgreSQL startup requires `ADMIN_PASSWORD` when creating an admin account or replacing this known fallback. On later restarts, a custom password changed in Admin → Change password remains stored in the database; use that page to rotate it. **Never deploy with the fallback.**
 
 ## Deploy on Render
 1. Extract the ZIP.
@@ -58,6 +58,7 @@ If you run without setting `ADMIN_PASSWORD`, the first-run local testing fallbac
    - `ADMIN_PASSWORD`: unique password of at least 12 characters
    - `ANALYTICS_SALT`: long random secret, different from `SECRET_KEY`
    - `DATABASE_PATH`: `/var/data/quicksave.db` if a disk is mounted at `/var/data`
+   - Set `ADMIN_PASSWORD` before the first PostgreSQL deploy. The app rejects an unset password for a new database or one still using the local fallback.
 6. **Persistence warning:** Render's default filesystem is ephemeral. For data to survive restarts/redeploys with this SQLite setup, add a persistent disk mounted at `/var/data`. Render currently limits persistent disks to paid web services. If you deploy on a free instance without persistent storage, link changes, password changes, and analytics may be lost when the instance restarts/redeploys. For a durable free-tier alternative, use a managed external database (e.g. PostgreSQL) and adapt the database configuration before launch.
 7. Render provides an `onrender.com` URL, so you can test before buying a custom domain.
 
