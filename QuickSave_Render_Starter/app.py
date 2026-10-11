@@ -407,8 +407,6 @@ def init_db():
             pass
 
 
-init_db()
-
 def utc_now():
     return datetime.now(timezone.utc)
 
@@ -745,6 +743,8 @@ def export_csv():
 @app.errorhandler(404)
 def not_found(_):
     return render_template("404.html"), 404
+
+init_db()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)
