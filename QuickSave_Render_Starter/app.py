@@ -219,24 +219,127 @@ def init_db():
     if con is None:
         print("WARNING: get_db_connection returned None, skipping init_db")
         return
+
+    database_is_postgres = is_postgres_database()
+
     try:
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS links (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT NOT NULL,
-                title TEXT
-            )
-        """)
-        existing_row = con.execute("SELECT COUNT(*) FROM links").fetchone()
+        if database_is_postgres:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS links (
+                    id SERIAL PRIMARY KEY,
+                    platform TEXT UNIQUE NOT NULL,
+                    subtitle TEXT DEFAULT '',
+                    url TEXT NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    sort_order INTEGER DEFAULT 0
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS visits (
+                    id SERIAL PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    day TEXT NOT NULL,
+                    visitor_hash TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    referrer TEXT DEFAULT '',
+                    country TEXT DEFAULT ''
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS clicks (
+                    id SERIAL PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    day TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    visitor_hash TEXT NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS admin_users (
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS businesses (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT NOW()
+                )
+            """)
+        else:
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS links (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    platform TEXT UNIQUE NOT NULL,
+                    subtitle TEXT DEFAULT '',
+                    url TEXT NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    sort_order INTEGER DEFAULT 0
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS visits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    day TEXT NOT NULL,
+                    visitor_hash TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    referrer TEXT DEFAULT '',
+                    country TEXT DEFAULT ''
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS clicks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    day TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    visitor_hash TEXT NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS admin_users (
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS businesses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+        row = con.execute("SELECT COUNT(*) FROM links").fetchone()
         con.commit()
-        print(f"DB init ok, count={existing_row[0] if existing_row else 0}")
+        print(f"DB init ok: links={row[0] if row else 0}")
     except Exception as e:
         print(f"init_db error: {e}")
+        try:
+            con.rollback()
+        except Exception:
+            pass
     finally:
         try:
             con.close()
-        except:
+        except Exception:
             pass
+
+
 init_db()
 
 def utc_now():
