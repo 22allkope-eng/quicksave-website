@@ -88,7 +88,7 @@ def is_integrity_error(exc):
     if isinstance(exc, sqlite3.IntegrityError):
         return True
     if psycopg2 is not None:
-        return isinstance(exc, psycopg2.errors.IntegrityError)
+        return isinstance(exc, psycopg2.IntegrityError)
     return False
 
 
@@ -238,8 +238,7 @@ def db():
 def init_db():
     con = get_db_connection()
     if con is None:
-        print("WARNING: get_db_connection returned None, skipping init_db")
-        return
+        raise RuntimeError("Database connection failed during startup; cannot initialize schema.")
 
     database_is_postgres = is_postgres_database()
 
@@ -248,6 +247,7 @@ def init_db():
             con.execute("""
                 CREATE TABLE IF NOT EXISTS links (
                     id SERIAL PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
                     platform TEXT UNIQUE NOT NULL,
                     subtitle TEXT DEFAULT '',
                     url TEXT NOT NULL,
@@ -258,11 +258,11 @@ def init_db():
             con.execute("""
                 CREATE TABLE IF NOT EXISTS visits (
                     id SERIAL PRIMARY KEY,
-                    created_at TEXT NOT NULL,
-                    day TEXT NOT NULL,
-                    visitor_hash TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    referrer TEXT DEFAULT '',
+                    path TEXT,
+                    visitor_hash TEXT,
+                    referrer TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    day DATE DEFAULT CURRENT_DATE,
                     country TEXT DEFAULT ''
                 )
             """)
@@ -291,13 +291,31 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS businesses (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT NOW()
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''")
+            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS platform TEXT")
+            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS subtitle TEXT DEFAULT ''")
+            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS url TEXT")
+            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE")
+            con.execute("ALTER TABLE links ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0")
+            con.execute("UPDATE links SET platform = title WHERE platform IS NULL OR platform = ''")
+            con.execute("UPDATE links SET title = platform WHERE title IS NULL OR title = ''")
+            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS links_platform_unique ON links(platform)")
+
+            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS path TEXT")
+            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS visitor_hash TEXT")
+            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS referrer TEXT")
+            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS day DATE DEFAULT CURRENT_DATE")
+            con.execute("ALTER TABLE visits ADD COLUMN IF NOT EXISTS country TEXT DEFAULT ''")
         else:
             con.execute("""
                 CREATE TABLE IF NOT EXISTS links (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL DEFAULT '',
                     platform TEXT UNIQUE NOT NULL,
                     subtitle TEXT DEFAULT '',
                     url TEXT NOT NULL,
@@ -308,11 +326,11 @@ def init_db():
             con.execute("""
                 CREATE TABLE IF NOT EXISTS visits (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL,
-                    day TEXT NOT NULL,
-                    visitor_hash TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    referrer TEXT DEFAULT '',
+                    path TEXT,
+                    visitor_hash TEXT,
+                    referrer TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    day DATE DEFAULT CURRENT_DATE,
                     country TEXT DEFAULT ''
                 )
             """)
@@ -345,15 +363,43 @@ def init_db():
                 )
             """)
 
+            link_columns = {row["name"] for row in con.execute("PRAGMA table_info(links)").fetchall()}
+            for column, definition in (
+                ("title", "TEXT NOT NULL DEFAULT ''"),
+                ("platform", "TEXT"),
+                ("subtitle", "TEXT DEFAULT ''"),
+                ("url", "TEXT"),
+                ("enabled", "INTEGER DEFAULT 1"),
+                ("sort_order", "INTEGER DEFAULT 0"),
+            ):
+                if column not in link_columns:
+                    con.execute(f"ALTER TABLE links ADD COLUMN {column} {definition}")
+            con.execute("UPDATE links SET platform = title WHERE platform IS NULL OR platform = ''")
+            con.execute("UPDATE links SET title = platform WHERE title IS NULL OR title = ''")
+            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS links_platform_unique ON links(platform)")
+
+            visit_columns = {row["name"] for row in con.execute("PRAGMA table_info(visits)").fetchall()}
+            for column, definition in (
+                ("path", "TEXT"),
+                ("visitor_hash", "TEXT"),
+                ("referrer", "TEXT"),
+                ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("day", "DATE DEFAULT CURRENT_DATE"),
+                ("country", "TEXT DEFAULT ''"),
+            ):
+                if column not in visit_columns:
+                    con.execute(f"ALTER TABLE visits ADD COLUMN {column} {definition}")
+
         row = con.execute("SELECT COUNT(*) FROM links").fetchone()
         con.commit()
-        print(f"DB init ok: links={row[0] if row else 0}")
+        app.logger.info("Database schema initialized successfully; links=%s", row[0] if row else 0)
     except Exception as e:
-        print(f"init_db error: {e}")
         try:
             con.rollback()
         except Exception:
             pass
+        app.logger.exception("Database schema initialization failed")
+        raise RuntimeError("Database schema initialization failed") from e
     finally:
         try:
             con.close()
@@ -573,8 +619,8 @@ def admin_links():
                     if not platform or not valid_external_url(url):
                         flash(f"Platform #{lid}: enter a name and a valid http/https URL.", "error")
                         return redirect(url_for("admin_links"))
-                    con.execute("UPDATE links SET platform=?,subtitle=?,url=?,enabled=? WHERE id=?",
-                                (platform,subtitle,url,enabled,lid))
+                    con.execute("UPDATE links SET title=?,platform=?,subtitle=?,url=?,enabled=? WHERE id=?",
+                                (platform,platform,subtitle,url,enabled,lid))
                 flash("Download links saved.", "success")
             elif action == "add":
                 platform = request.form.get("new_platform","").strip()[:40]
@@ -585,8 +631,8 @@ def admin_links():
                 else:
                     try:
                         next_order = con.execute("SELECT COALESCE(MAX(sort_order),0)+1 n FROM links").fetchone()["n"]
-                        con.execute("INSERT INTO links(platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?)",
-                                    (platform,subtitle,url,enabled_value(True),next_order))
+                        con.execute("INSERT INTO links(title,platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?,?)",
+                                    (platform,platform,subtitle,url,enabled_value(True),next_order))
                         flash("Platform added.", "success")
                     except Exception as exc:
                         if not is_integrity_error(exc):
