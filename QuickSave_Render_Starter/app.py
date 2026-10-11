@@ -13,9 +13,9 @@ except ImportError:  # pragma: no cover - installed only in Render deployments
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-DB_PATH = os.environ.get("SQLITE_PATH") or os.environ.get("DATABASE_PATH") or "/tmp/quicksave.db"
-if os.environ.get("RENDER") == "true" and not os.environ.get("SQLITE_PATH") and not os.environ.get("DATABASE_PATH"):
-    DB_PATH = "/tmp/quicksave.db"
+DB_PATH = "/tmp/quicksave.db"
+if os.environ.get("SQLITE_PATH"):
+    DB_PATH = os.environ.get("SQLITE_PATH")
 ADMIN_USER = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 SITE_NAME = "QuickSave"
@@ -217,98 +217,26 @@ def db():
 def init_db():
     con = get_db_connection()
     if con is None:
-        print("WARNING: DB connection is None, skipping init_db")
+        print("WARNING: get_db_connection returned None, skipping init_db")
         return
-
-    postgres_mode = is_postgres_database()
     try:
-        if postgres_mode:
-            con.execute("""CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY, value TEXT NOT NULL
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS links (
-                id BIGSERIAL PRIMARY KEY, platform TEXT UNIQUE NOT NULL,
-                subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS visits (
-                id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
-                day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
-                referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS clicks (
-                id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
-                day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
-                username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
-            )""")
-        else:
-            con.execute("""CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY, value TEXT NOT NULL
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS links (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT UNIQUE NOT NULL,
-                subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS visits (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
-                day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
-                referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS clicks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
-                day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
-            )""")
-            con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
-                username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
-            )""")
-
-        existing_row = con.execute("SELECT COUNT(*) n FROM links").fetchone()
-        existing = existing_row["n"] if existing_row else 0
-
-        if not existing:
-            con.executemany("INSERT INTO links(platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?)",
-                            [(p,s,u,1,i) for i,(p,s,u,slug) in enumerate(DEFAULT_LINKS)])
-        else:
-            con.execute("UPDATE links SET url=? WHERE platform=? AND url!=?", (DEFAULT_LINKS[0][2], "YouTube", DEFAULT_LINKS[0][2]))
-
-        configured_password = ADMIN_PASSWORD or "ChangeMeNow-2026!"
-        existing_user = con.execute("SELECT username FROM admin_users WHERE username=?", (ADMIN_USER,)).fetchone()
-        if existing_user:
-            con.execute("UPDATE admin_users SET password_hash=? WHERE username=?",
-                        (generate_password_hash(configured_password), ADMIN_USER))
-        else:
-            con.execute("INSERT INTO admin_users(username,password_hash) VALUES(?,?)",
-                        (ADMIN_USER, generate_password_hash(configured_password)))
-
-        if ADMIN_PASSWORD:
-            con.execute("DELETE FROM admin_users WHERE username != ?", (ADMIN_USER,))
-
-        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    ("site_subtitle", "Video Downloader Directory"))
-        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    ("announcement", ""))
-        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    ("seo_title", "QuickSave - Video Downloader Directory"))
-        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    ("seo_description", "Find useful external video download tools for YouTube, Facebook, Instagram, TikTok, X and LinkedIn in one simple directory."))
-        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    ("seo_keywords", "video downloader, social media video tools, YouTube video tools, Facebook video tools, Instagram Reels tools, TikTok video tools"))
-        con.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    ("seo_image_url", ""))
-
-        if hasattr(con, "commit"):
-            con.commit()
-    except Exception:
-        app.logger.exception("Database initialization failed.")
-        if hasattr(con, "rollback"):
-            con.rollback()
-        raise
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                title TEXT
+            )
+        """)
+        existing_row = con.execute("SELECT COUNT(*) FROM links").fetchone()
+        con.commit()
+        print(f"DB init ok, count={existing_row[0] if existing_row else 0}")
+    except Exception as e:
+        print(f"init_db error: {e}")
     finally:
-        if con is not None and hasattr(con, "close"):
+        try:
             con.close()
+        except:
+            pass
 init_db()
 
 def utc_now():
