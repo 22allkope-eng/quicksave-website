@@ -13,7 +13,9 @@ except ImportError:  # pragma: no cover - installed only in Render deployments
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-DB_PATH = os.environ.get("DATABASE_PATH", "quicksave.db")
+DB_PATH = os.environ.get("SQLITE_PATH") or os.environ.get("DATABASE_PATH") or "/tmp/quicksave.db"
+if os.environ.get("RENDER") == "true" and not os.environ.get("SQLITE_PATH") and not os.environ.get("DATABASE_PATH"):
+    DB_PATH = "/tmp/quicksave.db"
 ADMIN_USER = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 SITE_NAME = "QuickSave"
@@ -215,67 +217,56 @@ def db():
 def init_db():
     con = get_db_connection()
     if con is None:
-        raise RuntimeError("Database connection could not be created. Check DATABASE_URL or the sqlite path.")
+        print("WARNING: DB connection is None, skipping init_db")
+        return
 
     postgres_mode = is_postgres_database()
     try:
         if postgres_mode:
-            try:
-                con.execute("""CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY, value TEXT NOT NULL
-                )""")
-                con.execute("""CREATE TABLE IF NOT EXISTS links (
-                    id BIGSERIAL PRIMARY KEY, platform TEXT UNIQUE NOT NULL,
-                    subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
-                )""")
-                con.execute("""CREATE TABLE IF NOT EXISTS visits (
-                    id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
-                    day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
-                    referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
-                )""")
-                con.execute("""CREATE TABLE IF NOT EXISTS clicks (
-                    id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
-                    day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
-                )""")
-                con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
-                    username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
-                )""")
-            except Exception:
-                app.logger.exception("Postgres table creation failed.")
-                raise
+            con.execute("""CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS links (
+                id BIGSERIAL PRIMARY KEY, platform TEXT UNIQUE NOT NULL,
+                subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS visits (
+                id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
+                day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
+                referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS clicks (
+                id BIGSERIAL PRIMARY KEY, created_at TEXT NOT NULL,
+                day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
+                username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
+            )""")
         else:
-            try:
-                con.execute("""CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY, value TEXT NOT NULL
-                )""")
-                con.execute("""CREATE TABLE IF NOT EXISTS links (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT UNIQUE NOT NULL,
-                    subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
-                )""")
-                con.execute("""CREATE TABLE IF NOT EXISTS visits (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
-                    day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
-                    referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
-                )""")
-                con.execute("""CREATE TABLE IF NOT EXISTS clicks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
-                    day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
-                )""")
-                con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
-                    username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
-                )""")
-            except Exception:
-                app.logger.exception("SQLite table creation failed.")
-                raise
+            con.execute("""CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT UNIQUE NOT NULL,
+                subtitle TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS visits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+                day TEXT NOT NULL, visitor_hash TEXT NOT NULL, path TEXT NOT NULL,
+                referrer TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT ''
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS clicks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+                day TEXT NOT NULL, platform TEXT NOT NULL, visitor_hash TEXT NOT NULL
+            )""")
+            con.execute("""CREATE TABLE IF NOT EXISTS admin_users (
+                username TEXT PRIMARY KEY, password_hash TEXT NOT NULL
+            )""")
 
-        try:
-            existing_row = con.execute("SELECT COUNT(*) n FROM links").fetchone()
-            existing = existing_row["n"] if existing_row else 0
-        except Exception:
-            app.logger.exception("Failed to read link count after table creation.")
-            raise
+        existing_row = con.execute("SELECT COUNT(*) n FROM links").fetchone()
+        existing = existing_row["n"] if existing_row else 0
 
         if not existing:
             con.executemany("INSERT INTO links(platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?)",
@@ -311,6 +302,7 @@ def init_db():
         if hasattr(con, "commit"):
             con.commit()
     except Exception:
+        app.logger.exception("Database initialization failed.")
         if hasattr(con, "rollback"):
             con.rollback()
         raise
