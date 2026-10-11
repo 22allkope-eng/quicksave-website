@@ -33,6 +33,9 @@ class PostgresConnection:
         self.conn.autocommit = False
         self.cursor_obj = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+    def cursor(self):
+        return PostgresCursor(self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor))
+
     def execute(self, query, params=()):
         return self.cursor_obj.execute(_normalize_query_for_postgres(query), params)
 
@@ -65,6 +68,41 @@ class PostgresConnection:
     def close(self):
         self.cursor_obj.close()
         self.conn.close()
+
+
+class PostgresCursor:
+    def __init__(self, cursor):
+        self.cursor_obj = cursor
+
+    def execute(self, query, params=()):
+        return self.cursor_obj.execute(_normalize_query_for_postgres(query), params)
+
+    def fetchone(self):
+        return self.cursor_obj.fetchone()
+
+    def fetchall(self):
+        return self.cursor_obj.fetchall()
+
+    def close(self):
+        self.cursor_obj.close()
+
+
+def fetch_one(con, query, params=()):
+    cur = con.cursor()
+    try:
+        cur.execute(query, params)
+        return cur.fetchone()
+    finally:
+        cur.close()
+
+
+def fetch_all(con, query, params=()):
+    cur = con.cursor()
+    try:
+        cur.execute(query, params)
+        return cur.fetchall()
+    finally:
+        cur.close()
 
 
 def is_postgres_database():
@@ -363,7 +401,7 @@ def init_db():
                 )
             """)
 
-            link_columns = {row["name"] for row in con.execute("PRAGMA table_info(links)").fetchall()}
+            link_columns = {row["name"] for row in fetch_all(con, "PRAGMA table_info(links)")}
             for column, definition in (
                 ("title", "TEXT NOT NULL DEFAULT ''"),
                 ("platform", "TEXT"),
@@ -378,7 +416,7 @@ def init_db():
             con.execute("UPDATE links SET title = platform WHERE title IS NULL OR title = ''")
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS links_platform_unique ON links(platform)")
 
-            visit_columns = {row["name"] for row in con.execute("PRAGMA table_info(visits)").fetchall()}
+            visit_columns = {row["name"] for row in fetch_all(con, "PRAGMA table_info(visits)")}
             for column, definition in (
                 ("path", "TEXT"),
                 ("visitor_hash", "TEXT"),
@@ -390,9 +428,9 @@ def init_db():
                 if column not in visit_columns:
                     con.execute(f"ALTER TABLE visits ADD COLUMN {column} {definition}")
 
-        row = con.execute("SELECT COUNT(*) FROM links").fetchone()
+        row = fetch_one(con, "SELECT COUNT(*) AS count FROM links")
         con.commit()
-        app.logger.info("Database schema initialized successfully; links=%s", row[0] if row else 0)
+        app.logger.info("Database schema initialized successfully; links=%s", row["count"] if row else 0)
     except Exception as e:
         try:
             con.rollback()
@@ -428,8 +466,12 @@ def record_visit():
         ref = (request.referrer or "")[:500]
         country = (request.headers.get("CF-IPCountry") or "")[:8]
         with db() as con:
-            con.execute("INSERT INTO visits(created_at,day,visitor_hash,path,referrer,country) VALUES(?,?,?,?,?,?)",
-                        (now.isoformat(), now.strftime("%Y-%m-%d"), visitor_id(), request.path[:200], ref, country))
+            cur = con.cursor()
+            try:
+                cur.execute("INSERT INTO visits(created_at,day,visitor_hash,path,referrer,country) VALUES(?,?,?,?,?,?)",
+                            (now.isoformat(), now.strftime("%Y-%m-%d"), visitor_id(), request.path[:200], ref, country))
+            finally:
+                cur.close()
     except Exception:
         app.logger.exception("Analytics visit write failed")
 
@@ -443,7 +485,7 @@ def admin_required(fn):
 
 def get_setting(key, default=""):
     with db() as con:
-        row = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        row = fetch_one(con, "SELECT value FROM settings WHERE key=?", (key,))
         return row["value"] if row else default
 
 def seo_context(title=None, description=None, canonical=None):
@@ -478,7 +520,7 @@ def sitemap_xml():
     root = request.url_root.rstrip("/")
     urls = [(root + "/", "daily", "1.0")]
     with db() as con:
-        links = con.execute(f"SELECT platform FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform").fetchall()
+        links = fetch_all(con, f"SELECT platform FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform")
     for row in links:
         slug = row["platform"].lower().replace(" ", "-")
         urls.append((root + "/tools/" + slug, "weekly", "0.8"))
@@ -492,7 +534,7 @@ def sitemap_xml():
 @app.route("/tools/<slug>")
 def tool_page(slug):
     with db() as con:
-        all_links = con.execute(f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform").fetchall()
+        all_links = fetch_all(con, f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order,platform")
     chosen = None
     for link in all_links:
         if link["platform"].lower().replace(" ", "-") == slug.lower():
@@ -512,7 +554,7 @@ def tool_page(slug):
 @app.route("/")
 def home():
     with db() as con:
-        links = con.execute(f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order, platform").fetchall()
+        links = fetch_all(con, f"SELECT * FROM links WHERE {enabled_where_clause()} ORDER BY sort_order, platform")
     seo = seo_context()
     ads = []
     for slot in (1, 2):
@@ -528,7 +570,7 @@ def home():
 @app.route("/go/<int:link_id>")
 def go(link_id):
     with db() as con:
-        link = con.execute(f"SELECT * FROM links WHERE id=? AND {enabled_where_clause()}", (link_id,)).fetchone()
+        link = fetch_one(con, f"SELECT * FROM links WHERE id=? AND {enabled_where_clause()}", (link_id,))
         if not link:
             abort(404)
         now = utc_now()
@@ -550,21 +592,21 @@ def admin_dashboard():
     since = (utc_now().date() - timedelta(days=int(period)-1)).isoformat()
     today = utc_now().strftime("%Y-%m-%d")
     with db() as con:
-        total_visits = con.execute("SELECT COUNT(*) n FROM visits").fetchone()["n"]
-        today_visits = con.execute("SELECT COUNT(*) n FROM visits WHERE day=?", (today,)).fetchone()["n"]
-        today_unique = con.execute("SELECT COUNT(DISTINCT visitor_hash) n FROM visits WHERE day=?", (today,)).fetchone()["n"]
-        page_views = con.execute("SELECT COUNT(*) n FROM visits WHERE day>=?", (since,)).fetchone()["n"]
-        clicks_total = con.execute("SELECT COUNT(*) n FROM clicks").fetchone()["n"]
-        link_stats = con.execute("""SELECT l.platform,l.enabled,l.url,
+        total_visits = fetch_one(con, "SELECT COUNT(*) n FROM visits")["n"]
+        today_visits = fetch_one(con, "SELECT COUNT(*) n FROM visits WHERE day=?", (today,))["n"]
+        today_unique = fetch_one(con, "SELECT COUNT(DISTINCT visitor_hash) n FROM visits WHERE day=?", (today,))["n"]
+        page_views = fetch_one(con, "SELECT COUNT(*) n FROM visits WHERE day>=?", (since,))["n"]
+        clicks_total = fetch_one(con, "SELECT COUNT(*) n FROM clicks")["n"]
+        link_stats = fetch_all(con, """SELECT l.platform,l.enabled,l.url,
             (SELECT COUNT(*) FROM clicks c WHERE c.platform=l.platform AND c.day=?) today_clicks,
             (SELECT COUNT(*) FROM clicks c WHERE c.platform=l.platform AND c.day>=?) period_clicks
-            FROM links l ORDER BY l.sort_order,l.platform""", (today, since)).fetchall()
-        daily = con.execute("""SELECT day,COUNT(*) visits,COUNT(DISTINCT visitor_hash) unique_visitors
-            FROM visits WHERE day>=? GROUP BY day ORDER BY day""", (since,)).fetchall()
-        recent = con.execute("SELECT created_at,path,referrer,country FROM visits ORDER BY id DESC LIMIT 12").fetchall()
-        top_refs = con.execute("""SELECT CASE WHEN referrer='' THEN 'Direct / unknown'
+            FROM links l ORDER BY l.sort_order,l.platform""", (today, since))
+        daily = fetch_all(con, """SELECT day,COUNT(*) visits,COUNT(DISTINCT visitor_hash) unique_visitors
+            FROM visits WHERE day>=? GROUP BY day ORDER BY day""", (since,))
+        recent = fetch_all(con, "SELECT created_at,path,referrer,country FROM visits ORDER BY id DESC LIMIT 12")
+        top_refs = fetch_all(con, """SELECT CASE WHEN referrer='' THEN 'Direct / unknown'
             ELSE substr(referrer,1,100) END source,COUNT(*) n FROM visits WHERE day>=?
-            GROUP BY source ORDER BY n DESC LIMIT 8""", (since,)).fetchall()
+            GROUP BY source ORDER BY n DESC LIMIT 8""", (since,))
     return render_template("admin.html", total_visits=total_visits, today_visits=today_visits,
         today_unique=today_unique, page_views=page_views, clicks_total=clicks_total,
         link_stats=link_stats, daily=daily, recent=recent, top_refs=top_refs, period=period,
@@ -578,7 +620,7 @@ def admin_login():
         username = request.form.get("username","").strip()
         password = request.form.get("password","")
         with db() as con:
-            row = con.execute("SELECT * FROM admin_users WHERE username=?", (username,)).fetchone()
+            row = fetch_one(con, "SELECT * FROM admin_users WHERE username=?", (username,))
         if row and check_password_hash(row["password_hash"], password):
             session.clear()
             session["admin_user"] = username
@@ -607,7 +649,7 @@ def admin_links():
         action = request.form.get("action", "save")
         with db() as con:
             if action == "save":
-                rows = con.execute("SELECT id FROM links").fetchall()
+                rows = fetch_all(con, "SELECT id FROM links")
                 for row in rows:
                     lid = row["id"]
                     platform = request.form.get(f"platform_{lid}","").strip()[:40]
@@ -628,7 +670,7 @@ def admin_links():
                     flash("Enter a platform name and a valid http/https URL.", "error")
                 else:
                     try:
-                        next_order = con.execute("SELECT COALESCE(MAX(sort_order),0)+1 n FROM links").fetchone()["n"]
+                        next_order = fetch_one(con, "SELECT COALESCE(MAX(sort_order),0)+1 n FROM links")["n"]
                         con.execute("INSERT INTO links(title,platform,subtitle,url,enabled,sort_order) VALUES(?,?,?,?,?,?)",
                                     (platform,platform,subtitle,url,enabled_value(True),next_order))
                         flash("Platform added.", "success")
@@ -638,7 +680,7 @@ def admin_links():
                         flash("That platform name already exists. Use a unique name.", "error")
         return redirect(url_for("admin_links"))
     with db() as con:
-        links = con.execute("SELECT * FROM links ORDER BY sort_order,platform").fetchall()
+        links = fetch_all(con, "SELECT * FROM links ORDER BY sort_order,platform")
     return render_template("links.html", links=links)
 
 @app.route("/admin/settings", methods=["GET","POST"])
@@ -707,7 +749,7 @@ def admin_password():
         new = request.form.get("new_password","")
         confirm = request.form.get("confirm_password","")
         with db() as con:
-            row = con.execute("SELECT * FROM admin_users WHERE username=?", (session["admin_user"],)).fetchone()
+            row = fetch_one(con, "SELECT * FROM admin_users WHERE username=?", (session["admin_user"],))
             if not row or not check_password_hash(row["password_hash"], current):
                 flash("Current password is incorrect.", "error")
             elif len(new) < 12:
@@ -729,11 +771,11 @@ def export_csv():
     writer = csv.writer(output)
     writer.writerow(["date","visits","unique_visitors","download_clicks"])
     with db() as con:
-        days = con.execute("""SELECT d.day,COALESCE(v.visits,0),COALESCE(v.unique_visitors,0),COALESCE(c.clicks,0)
+                days = fetch_all(con, """SELECT d.day,COALESCE(v.visits,0),COALESCE(v.unique_visitors,0),COALESCE(c.clicks,0)
           FROM (SELECT day FROM visits UNION SELECT day FROM clicks) d
           LEFT JOIN (SELECT day,COUNT(*) visits,COUNT(DISTINCT visitor_hash) unique_visitors FROM visits GROUP BY day) v ON v.day=d.day
           LEFT JOIN (SELECT day,COUNT(*) clicks FROM clicks GROUP BY day) c ON c.day=d.day
-          ORDER BY d.day DESC""").fetchall()
+                    ORDER BY d.day DESC""")
     for row in days:
         writer.writerow(list(row))
     from flask import Response
