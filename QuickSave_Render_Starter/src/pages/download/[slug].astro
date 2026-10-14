@@ -1,0 +1,83 @@
+---
+import { getCollection, type CollectionEntry } from 'astro:content';
+import SiteLayout from '../../layouts/SiteLayout.astro';
+
+interface Props {
+  entry: CollectionEntry<'downloaders'>;
+}
+
+export async function getStaticPaths() {
+  const downloaders = await getCollection('downloaders');
+  if (downloaders.length !== 100) {
+    throw new Error(`Expected 100 downloader entries, found ${downloaders.length}.`);
+  }
+  const platformCounts = new Map<string, number>();
+  for (const entry of downloaders) {
+    platformCounts.set(entry.data.platform, (platformCounts.get(entry.data.platform) ?? 0) + 1);
+  }
+  if ([...platformCounts.values()].some((count) => count < 5)) {
+    throw new Error('Every downloader platform needs at least five entries for four related links.');
+  }
+  return downloaders.map((entry) => ({
+    params: { slug: entry.slug },
+    props: { entry },
+  }));
+}
+
+const { entry } = Astro.props;
+const { Content } = await entry.render();
+const allDownloaders = await getCollection('downloaders');
+const related = allDownloaders
+  .filter((candidate) => candidate.slug !== entry.slug && candidate.data.platform === entry.data.platform)
+  .sort((left, right) => left.data.title.localeCompare(right.data.title))
+  .slice(0, 4);
+const platformUrls: Record<string, string> = {
+  YouTube: 'https://www.youtube.com/',
+  TikTok: 'https://www.tiktok.com/',
+  Instagram: 'https://www.instagram.com/',
+  Facebook: 'https://www.facebook.com/',
+  X: 'https://x.com/',
+  LinkedIn: 'https://www.linkedin.com/',
+  'Local video files': 'https://www.videolan.org/vlc/',
+};
+const platformUrl = platformUrls[entry.data.platform] ?? '/';
+const downloadHeading = entry.data.platform === 'Local video files'
+  ? 'Choose a trusted local converter'
+  : entry.data.platform === 'Social media'
+    ? 'Start with the original platform'
+    : `Open ${entry.data.platform}`;
+const downloadLabel = entry.data.platform === 'Local video files'
+  ? 'Get VLC'
+  : entry.data.platform === 'Social media'
+    ? 'Browse platforms'
+    : `Visit ${entry.data.platform}`;
+---
+<SiteLayout title={`${entry.data.title} | QuickSave`} description={entry.data.description}>
+  <main class="wrap py-10 md:py-12">
+    <article class="article">
+      <div class="eyebrow">{entry.data.platform} GUIDE</div>
+      <aside class="download-box" aria-label="Download options">
+        <div>
+          <h2>{downloadHeading}</h2>
+          <p>Use official save or export options. Only keep media you have permission to use.</p>
+        </div>
+        <a class="download-cta" href={platformUrl} target={platformUrl === '/' ? undefined : '_blank'} rel={platformUrl === '/' ? undefined : 'noopener noreferrer'}>{downloadLabel}</a>
+      </aside>
+      <Content />
+    </article>
+
+    {related.length > 0 && (
+      <aside class="related" aria-labelledby="related-title">
+        <header>
+          <h2 id="related-title">Related Downloaders</h2>
+          <p>More {entry.data.platform} guides</p>
+        </header>
+        <nav class="related-list" aria-label="Related downloaders">
+          {related.map((item) => (
+            <a href={`/download/${item.slug}/`}>{item.data.title}</a>
+          ))}
+        </nav>
+      </aside>
+    )}
+  </main>
+</SiteLayout>

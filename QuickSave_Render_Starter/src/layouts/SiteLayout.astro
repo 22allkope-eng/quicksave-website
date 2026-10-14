@@ -1,0 +1,72 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <title>{title}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
+    <style is:global>
+      :root{font-family:'DM Sans',sans-serif;color:#182423;background:#f4f7f3;font-synthesis:none;text-rendering:optimizeLegibility;--ink:#182423;--muted:#5e6d68;--line:#d9e2dc;--paper:#fff;--green:#18745d;--lime:#d7f36a;--blue:#356ca5;--coral:#d76b4e}
+      *{box-sizing:border-box}
+      body{margin:0;min-width:320px;background:radial-gradient(ellipse at 8% 0%,#e5f0e4 0,transparent 38%),radial-gradient(ellipse at 100% 10%,#e7edf6 0,transparent 30%),#f4f7f3}
+      a{color:inherit}
+      .wrap{width:min(1100px,calc(100% - 40px));margin:auto}
+      .topbar{border-bottom:1px solid var(--line);background:#ffffffbd;backdrop-filter:blur(12px)}
+      .topbar-inner{height:70px;display:flex;align-items:center;justify-content:space-between}
+      .brand{font-family:Manrope,sans-serif;text-decoration:none;font-size:20px;font-weight:800;letter-spacing:0}
+      .brand span{color:var(--green)}
+      .nav-link{font-size:14px;font-weight:700;text-decoration:none;color:var(--green)}
+      main{padding:45px 0 72px}
+      h1,h2,h3{font-family:Manrope,sans-serif;letter-spacing:0}
+      h1{font-size:42px;line-height:1.1;margin:10px 0 14px;max-width:780px}
+      h2{font-size:23px;line-height:1.2;margin:0}
+      h3{font-size:17px;margin:0}
+      p{line-height:1.65}
+      .eyebrow{text-transform:uppercase;letter-spacing:.08em;font-size:12px;font-weight:800;color:var(--green)}
+      .lede{max-width:680px;color:var(--muted);margin:0 0 30px}
+      .platform-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
+      .platform-card{background:var(--paper);border:1px solid var(--line);border-top:3px solid var(--green);padding:20px 21px 18px;box-shadow:0 8px 22px #263b2c0a;animation:rise .45s both}
+      .platform-card:nth-child(3n+2){border-top-color:var(--blue)}.platform-card:nth-child(3n){border-top-color:var(--coral)}
+      .platform-card header{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:13px;margin-bottom:10px}
+      .platform-card header span{font-size:12px;color:var(--muted)}
+      .subpage-list{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;list-style:none;padding:0;margin:0}
+      .subpage-list a{display:block;padding:9px 2px;border-bottom:1px solid #edf1ed;color:#344541;text-decoration:none;font-size:13px;line-height:1.4}
+      .subpage-list a:hover,.related-list a:hover{color:var(--green);text-decoration:underline;text-underline-offset:3px}
+      .article{max-width:780px;margin:auto;background:var(--paper);border:1px solid var(--line);padding:clamp(24px,5vw,52px);box-shadow:0 12px 36px #263b2c0a}
+      .article h1{font-size:38px}
+      .article h2{margin:34px 0 14px}
+      .article h3{margin:22px 0 6px}
+      .article p,.article li{color:#394a45;line-height:1.75}
+      .article ol{padding-left:23px}
+      .article table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}
+      .article th,.article td{border-bottom:1px solid var(--line);padding:11px 10px;vertical-align:top}
+      .related{max-width:780px;margin:28px auto 0;padding-top:23px;border-top:2px solid var(--ink)}
+      .related header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px}
+      .related header p{margin:0;color:var(--muted);font-size:13px}
+      .related-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+      .related-list a{padding:12px 14px;background:#fff;border:1px solid var(--line);text-decoration:none;font-size:14px;font-weight:600}
+      footer{border-top:1px solid var(--line);padding:20px 0;color:var(--muted);font-size:13px}
+      @keyframes rise{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:translateY(0)}}
+      @media(max-width:650px){.wrap{width:min(100% - 28px,520px)}main{padding-top:33px}h1{font-size:34px}.platform-grid{grid-template-columns:1fr}.subpage-list{grid-template-columns:1fr}.article h1{font-size:32px}.related-list{grid-template-columns:1fr}.related header{display:block}.related header p{margin-top:5px}}
+      @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important}}
+    </style>
+  </head>
+  <body class="bg-limewash font-sans text-ink">
+    <div class="topbar"><div class="wrap topbar-inner"><a class="brand" href="/">Quick<span>Save</span></a><a class="nav-link" href="/">Download guides</a></div></div>
+    <slot />
+    <footer><div class="wrap">QuickSave · Practical download guides. Save only media you have permission to keep.</div></footer>
+  </body>
+</html>

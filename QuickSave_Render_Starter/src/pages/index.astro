@@ -1,0 +1,45 @@
+---
+import { getCollection } from 'astro:content';
+import SiteLayout from '../layouts/SiteLayout.astro';
+
+const downloaders = await getCollection('downloaders');
+const platforms = ['YouTube', 'TikTok', 'Instagram', 'Facebook', 'X', 'LinkedIn'];
+const groups = platforms.map((platform) => ({
+  platform,
+  pages: downloaders
+    .filter((entry) => entry.data.platform === platform)
+    .sort((left, right) => left.data.title.localeCompare(right.data.title))
+    .slice(0, 7),
+}));
+
+if (groups.some(({ pages }) => pages.length !== 7)) {
+  throw new Error('Every homepage platform card must have exactly seven downloader pages.');
+}
+---
+<SiteLayout
+  title="QuickSave | Download Guides by Platform"
+  description="Browse practical download guides for YouTube, TikTok, Instagram, Facebook, X, and LinkedIn."
+>
+  <main class="wrap">
+    <section aria-labelledby="page-title">
+      <div class="eyebrow">QUICKSAVE FIELD GUIDE</div>
+      <h1 id="page-title">Find the right download guide.</h1>
+      <p class="lede">Browse format, device, and platform guides. Use official save and export options, and keep only media you have permission to use.</p>
+    </section>
+    <section class="platform-grid" aria-label="Download guides by platform">
+      {groups.map(({ platform, pages }, index) => (
+        <article class="platform-card" style={`animation-delay:${index * 55}ms`}>
+          <header>
+            <h2>{platform}</h2>
+            <span>7 guides</span>
+          </header>
+          <ul class="subpage-list">
+            {pages.map((page) => (
+              <li><a href={`/download/${page.slug}/`}>{page.data.title}</a></li>
+            ))}
+          </ul>
+        </article>
+      ))}
+    </section>
+  </main>
+</SiteLayout>
